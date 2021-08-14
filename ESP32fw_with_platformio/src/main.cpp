@@ -6,7 +6,7 @@
 #include "IIC_servo.h"
 #define PIN_CLK 0
 #define PIN_DATA 34
-#define READ_LEN (2 * 256)
+#define READ_LEN (2)
 uint8_t BUFFER[READ_LEN] = {0};
 uint16_t oldy[160];
 int16_t* adcBuffer = NULL;
@@ -18,7 +18,7 @@ const int PORT = 8000;  //適当でOK
 const char* pc_addr = "172.20.10.2";
 const int pc_port = 10000;  //送信先のポート 適当でOK
 
-void i2sInit() {
+void i2s_init() {
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
         .sample_rate = 44100,
@@ -39,51 +39,34 @@ void i2sInit() {
     i2s_set_pin(I2S_NUM_0, &pin_config);
     i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
 }
+int mic_counter = 0;
+bool now_mic = false;
+void mic_record(void) {
+    size_t bytesread;
+    now_mic = true;
 
-void showSignal() {
-    // Offset
+    i2s_init();
+    M5.Lcd.setCursor(0, 1);
 
-    int32_t offset_sum = 0;
-    for (int n = 0; n < 160; n++) {
-        offset_sum += (int16_t)adcBuffer[n];
+    for (int p = 0; p < 50; p++) {
+        i2s_zero_dma_buffer(I2S_NUM_0);
+        delay(5);
+        i2s_read(I2S_NUM_0, (char*)BUFFER, READ_LEN, &bytesread, portMAX_DELAY);
+        adcBuffer = (int16_t*)BUFFER;
+        int16_t set_value = adcBuffer[0];
+        M5.Lcd.println(mic_counter);
+        mic_counter++;
+        M5.Lcd.println(set_value);
+        OscWiFi.send(pc_addr, pc_port, "/volume", set_value);
+        OscWiFi.send(pc_addr, pc_port, "/time", 5 * p);
     }
-    int offset_val = -(offset_sum / 160);
-    // Auto Gain
-    int max_val = 2000;
-    for (int n = 0; n < 160; n++) {
-        int16_t val = (int16_t)adcBuffer[n] + offset_val;
-        if (max_val < abs(val)) {
-            max_val = abs(val);
-        }
-    }
 
-    int y;
-    static int pre_y = 0;
-    for (int n = 0; n < 160; n++) {
-        y = adcBuffer[n] + offset_val;
-        y = map(y, -max_val, max_val, 0, 2000);
-
-        oldy[n] = y;
-    }
-    M5.Lcd.setCursor(0, 0);
-    M5.Lcd.println(y);
-    Serial.println(y);
-    OscWiFi.send(pc_addr, pc_port, "/volume", y);
-
-    if (pre_y == y) {
-        Serial.println("not change");
-        M5.Lcd.println("not change");
-        i2sInit();
-    }
-    pre_y = y;
+    now_mic = false;
 }
 
-void mic_record_task(void* arg) {
-    size_t bytesread;
+void mic_task(void* arg) {
     while (1) {
-        i2s_read(I2S_NUM_0, (char*)BUFFER, READ_LEN, &bytesread, (100 / portTICK_RATE_MS));
-        adcBuffer = (int16_t*)BUFFER;
-        showSignal();
+        mic_record();
         vTaskDelay(100 / portTICK_RATE_MS);
     }
 }
@@ -98,6 +81,23 @@ void print_wifi_state() {
     M5.Lcd.println(WiFi.localIP());
     M5.Lcd.print("Port: ");
     M5.Lcd.println(PORT);
+}
+
+int counter = 0;
+void control_task(const int index, const int angle) {
+    Servo_pulse_set(index, angle);
+    if (counter == 10) {
+        if (!now_mic) {
+            M5.Lcd.setCursor(0, 5);
+            M5.Lcd.println("mic!!");
+            mic_record();
+            counter = 0;
+        }
+    } else {
+        M5.Lcd.setCursor(0, 5);
+        M5.Lcd.println("non!!");
+    }
+    counter++;
 }
 
 void initWiFi() {
@@ -115,42 +115,42 @@ void initWiFi() {
                       [](const OscMessage& m) {
                           const int servoIndex = 1;
                           const int servoAngle = m.arg<int>(0);
-                          Servo_pulse_set(servoIndex, servoAngle);
+                          control_task(servoIndex, servoAngle);
                       });
 
     OscWiFi.subscribe(PORT, "/pitch",
                       [](const OscMessage& m) {
                           const int servoIndex = 2;
                           const int servoAngle = m.arg<int>(0);
-                          Servo_pulse_set(servoIndex, servoAngle);
+                          control_task(servoIndex, servoAngle);
                       });
 
     OscWiFi.subscribe(PORT, "/yaw",
                       [](const OscMessage& m) {
                           const int servoIndex = 3;
                           const int servoAngle = m.arg<int>(0);
-                          Servo_pulse_set(servoIndex, servoAngle);
+                          control_task(servoIndex, servoAngle);
                       });
 
     OscWiFi.subscribe(PORT, "/vertical",
                       [](const OscMessage& m) {
                           const int servoIndex = 4;
                           const int servoAngle = m.arg<int>(0);
-                          Servo_pulse_set(servoIndex, servoAngle);
+                          control_task(servoIndex, servoAngle);
                       });
 
     OscWiFi.subscribe(PORT, "/eye",
                       [](const OscMessage& m) {
                           const int servoIndex = 5;
                           const int servoAngle = m.arg<int>(0);
-                          Servo_pulse_set(servoIndex, servoAngle);
+                          control_task(servoIndex, servoAngle);
                       });
 
     OscWiFi.subscribe(PORT, "/mouth",
                       [](const OscMessage& m) {
                           const int servoIndex = 6;
                           const int servoAngle = m.arg<int>(0);
-                          Servo_pulse_set(servoIndex, servoAngle);
+                          control_task(servoIndex, servoAngle);
                       });
 }
 
@@ -162,17 +162,17 @@ void setup() {
     M5.Lcd.fillScreen(WHITE);
     M5.Lcd.setTextColor(BLACK, WHITE);
     M5.Lcd.println("mic test");
-    i2sInit();
-    xTaskCreate(mic_record_task, "mic_record_task", 2048, NULL, 1, NULL);
-    Serial.begin(115200);
+    i2s_init();
+    xTaskCreate(mic_task, "mic_record_task", 2048, NULL, 1, NULL);
     delay(1000);
 }
 
-size_t bytesread;
-int16_t* pre_adcBuffer = 0;
-
 void loop() {
+    if (M5.BtnA.wasPressed()) {
+        esp_restart();
+        M5.update();
+    }
+
     OscWiFi.update();
-    i2s_read(I2S_NUM_0, (char*)BUFFER, READ_LEN, &bytesread, (100 / portTICK_RATE_MS));
-    vTaskDelay(25);
+    //i2s_read(I2S_NUM_0, (char*)BUFFER, READ_LEN, &bytesread, portMAX_DELAY);
 }
